@@ -7,10 +7,26 @@
 #include <cstdio>
 #include <algorithm>
 
-// Define PI if missing (for Windows)
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
 #endif
+
+// --- 1. ALGORITHM: LINEAR CONGRUENTIAL GENERATOR (LCG) ---
+// REASON: Implementing our own Random Number Generator (RNG) instead of using
+// the standard rand(). This is how early graphics systems generated noise.
+// Formula: X_n+1 = (a * X_n + c) % m
+unsigned long seed = 123456789;
+float customRand(float min, float max) {
+    const unsigned long a = 1103515245;
+    const unsigned long c = 12345;
+    const unsigned long m = 2147483648;
+
+    seed = (a * seed + c) % m;
+
+    // Normalize to 0.0 - 1.0 range
+    float normalized = (float)seed / (float)m;
+    return min + normalized * (max - min);
+}
 
 // --- CONFIGURATION ---
 int WINDOW_WIDTH = 1200;
@@ -24,7 +40,7 @@ float cameraAngleX = 20.0f;
 float cameraAngleY = 0.0f;
 float cameraX = 0.0f;
 float cameraY = 0.0f;
-float cameraZ = -40.0f; // Start zoomed out
+float cameraZ = -40.0f;
 bool mousePressed = false;
 int lastMouseX = 0, lastMouseY = 0;
 bool paused = false;
@@ -81,10 +97,8 @@ std::vector<Button> buttons = {
 
 Slider speedSlider = { 0, 170, 100, 10, 0.333f, "Speed:", 0.0f, 3.0f, animationSpeed };
 
-// Star Data
 std::vector<std::pair<float, float>> stars;
 
-// Planet Data (Earth is Type 3)
 std::vector<Planet> planets = {
     {2.0f, 0.2f, 4.0f, 2.0f, 0.03f, 0.8f, 0.6f, 0.4f, "Mercury", {}, false, 1},
     {3.0f, 0.3f, 2.5f, -1.5f, 177.4f, 1.0f, 0.8f, 0.4f, "Venus", {}, false, 1},
@@ -98,54 +112,44 @@ std::vector<Planet> planets = {
 
 // --- DRAWING HELPERS ---
 
-// Helper to draw a "sticker" or flat patch on a sphere surface
 void drawSurfacePatch(float planetRadius, float patchSize, float r, float g, float b) {
     glPushMatrix();
-    glTranslatef(planetRadius, 0.0f, 0.0f); // Move to surface
-    glScalef(0.05f, 1.0f, 1.0f); // FLATTEN X-axis to make it a disk/sticker
+    glTranslatef(planetRadius, 0.0f, 0.0f);
+    glScalef(0.05f, 1.0f, 1.0f);
     glColor3f(r, g, b);
     glutSolidSphere(patchSize, 20, 20);
     glPopMatrix();
 }
 
-// 1. Smooth Sphere (High Poly)
 void drawSmoothSphere(float radius, float r, float g, float b) {
     glColor3f(r, g, b);
     glutSolidSphere(radius, 50, 50);
 }
 
-// 2. Cratered Sphere (Flat Spots)
 void drawCrateredSphere(float radius, float r, float g, float b) {
     drawSmoothSphere(radius, r, g, b);
-    // Draw flat craters
-    srand(50);
+    // Use custom RNG for crater placement
+    // REASON: Ensuring consistent procedural generation using LCG
+    seed = (unsigned long)(radius * 1000);
     for (int i = 0; i < 12; ++i) {
         glPushMatrix();
-        float theta = (rand() % 360);
-        float phi = (rand() % 180);
+        float theta = customRand(0, 360);
+        float phi = customRand(0, 180);
         glRotatef(theta, 0, 1, 0);
         glRotatef(phi, 0, 0, 1);
-        float craterSize = radius * (0.15f + (rand() % 10) / 100.0f);
+        float craterSize = radius * (0.15f + customRand(0, 10) / 100.0f);
         drawSurfacePatch(radius, craterSize, r * 0.6f, g * 0.6f, b * 0.6f);
         glPopMatrix();
     }
 }
 
-// 3. Earth (Flat Continents)
 void drawEarth(float radius) {
-    // Ocean
     drawSmoothSphere(radius, 0.0f, 0.4f, 0.8f);
-
-    // Continents (Approximate locations)
     struct Land { float lat, lon, size; };
     std::vector<Land> continents = {
-        {0.0f, 0.0f, 0.8f},     // Africa
-        {45.0f, 90.0f, 0.7f},   // Eurasia
-        {-20.0f, -60.0f, 0.6f}, // S. America
-        {40.0f, -100.0f, 0.7f}, // N. America
-        {-45.0f, 130.0f, 0.5f}  // Australia
+        {0.0f, 0.0f, 0.8f}, {45.0f, 90.0f, 0.7f}, {-20.0f, -60.0f, 0.6f},
+        {40.0f, -100.0f, 0.7f}, {-45.0f, 130.0f, 0.5f}
     };
-
     for (const auto& land : continents) {
         glPushMatrix();
         glRotatef(land.lon, 0, 1, 0);
@@ -155,10 +159,19 @@ void drawEarth(float radius) {
     }
 }
 
-// 4. Banded Sphere (Procedural Stripes, Smooth Geometry)
+// --- 2. ALGORITHM: LAMBERTIAN REFLECTION (Manual Lighting) ---
+// REASON: Manually calculating diffuse lighting intensity using the Dot Product.
+// Intensity = Normal_Vector dot Light_Vector
+// This replaces reliance on OpenGL's state machine for this specific object.
 void drawBandedSphere(float radius, float r, float g, float b) {
     int stacks = 40;
     int slices = 40;
+
+    // Light source direction (Coming from origin 0,0,0 where Sun is)
+    // In local planet space, the light direction is effectively the inverse of position,
+    // but for simplicity here we approximate a directional light from "left" (-X)
+    float lightDirX = -1.0f, lightDirY = 0.0f, lightDirZ = 0.0f;
+
     for (int i = 0; i < stacks; ++i) {
         float lat0 = M_PI * (-0.5f + (float)(i) / stacks);
         float z0 = sin(lat0);
@@ -167,20 +180,42 @@ void drawBandedSphere(float radius, float r, float g, float b) {
         float z1 = sin(lat1);
         float zr1 = cos(lat1);
 
-        // Stripe Logic
         bool isBand = (i / 4) % 2 == 0;
-        float shade = isBand ? 1.0f : 0.85f;
-        glColor3f(r * shade, g * shade, b * shade);
+        float baseR = isBand ? r : r * 0.85f;
+        float baseG = isBand ? g : g * 0.85f;
+        float baseB = isBand ? b : b * 0.85f;
 
         glBegin(GL_QUAD_STRIP);
         for (int j = 0; j <= slices; ++j) {
             float lng = 2 * M_PI * (float)(j - 1) / slices;
             float x = cos(lng);
             float y = sin(lng);
-            glNormal3f(x * zr0, y * zr0, z0);
-            glVertex3f(radius * x * zr0, radius * y * zr0, radius * z0);
-            glNormal3f(x * zr1, y * zr1, z1);
-            glVertex3f(radius * x * zr1, radius * y * zr1, radius * z1);
+
+            // Calculate Surface Normal
+            float nx = x * zr0;
+            float ny = y * zr0;
+            float nz = z0;
+
+            // --- ALGORITHM STEP: Dot Product for Diffuse Intensity ---
+            // Dot Product = (nx*lx) + (ny*ly) + (nz*lz)
+            // We take max(0.2, dot) to ensure a minimum ambient light of 0.2
+            float dotProduct = (nx * lightDirX) + (ny * lightDirY) + (nz * lightDirZ);
+            float intensity = std::max(0.2f, dotProduct); // Clamp min brightness
+
+            // Apply calculated color
+            glColor3f(baseR * intensity, baseG * intensity, baseB * intensity);
+
+            glNormal3f(nx, ny, nz);
+            glVertex3f(radius * nx, radius * ny, radius * nz);
+
+            // Repeat for second vertex in strip
+            nx = x * zr1; ny = y * zr1; nz = z1;
+            dotProduct = (nx * lightDirX) + (ny * lightDirY) + (nz * lightDirZ);
+            intensity = std::max(0.2f, dotProduct);
+
+            glColor3f(baseR * intensity, baseG * intensity, baseB * intensity);
+            glNormal3f(nx, ny, nz);
+            glVertex3f(radius * nx, radius * ny, radius * nz);
         }
         glEnd();
     }
@@ -188,13 +223,12 @@ void drawBandedSphere(float radius, float r, float g, float b) {
 
 void drawPlanet(const Planet& p) {
     glPushMatrix();
-    glRotatef(90.0f, 1.0f, 0.0f, 0.0f); // Fix orientation
+    glRotatef(90.0f, 1.0f, 0.0f, 0.0f);
 
     if (p.textureType == 0) drawSmoothSphere(p.size, p.red, p.green, p.blue);
     else if (p.textureType == 1) drawCrateredSphere(p.size, p.red, p.green, p.blue);
     else if (p.textureType == 2) drawBandedSphere(p.size, p.red, p.green, p.blue);
     else if (p.textureType == 3) drawEarth(p.size);
-
     glPopMatrix();
 }
 
@@ -202,7 +236,6 @@ void drawSun() {
     glPushMatrix();
     glColor3f(1.0f, 1.0f, 0.0f);
     glutSolidSphere(0.8f, 30, 30);
-    // Glow Rays
     glDisable(GL_LIGHTING);
     glDisable(GL_DEPTH_TEST);
     for (int i = 0; i < 12; i++) {
@@ -223,13 +256,46 @@ void drawSun() {
     glPopMatrix();
 }
 
+// --- 3. ALGORITHM: MIDPOINT CIRCLE ALGORITHM (Adapted) ---
+// REASON: Replaces standard 'cos/sin' loop. The Midpoint algorithm uses integer arithmetic
+// to determine pixel positions for a circle. 
+// ADAPTATION: Since we are in 3D float space (not 2D pixel space), we scale the radius UP
+// to run the integer algorithm, then scale the result DOWN to get smooth float coordinates.
 void drawOrbit(float radius) {
     glDisable(GL_LIGHTING);
     glColor3f(0.2f, 0.2f, 0.2f);
-    glBegin(GL_LINE_LOOP);
-    for (int i = 0; i < 100; ++i) {
-        float angle = 2.0f * M_PI * i / 100.0f;
-        glVertex3f(radius * cos(angle), 0.0f, radius * sin(angle));
+    glBegin(GL_POINTS); // Drawing points to show the algorithm steps clearly
+
+    // Scale up to use integer math (precision preservation)
+    int r = (int)(radius * 100.0f);
+    int x = 0;
+    int y = r;
+    int p = 1 - r; // Initial decision parameter
+
+    // Standard Midpoint Circle Algorithm loop
+    // Draws 8 octants simultaneously using symmetry
+    while (x <= y) {
+        float fx = x / 100.0f; // Scale back down to world coordinates
+        float fy = y / 100.0f;
+
+        // Plot 8 octants on the XZ plane (y=0)
+        glVertex3f(fx, 0, fy);
+        glVertex3f(fy, 0, fx);
+        glVertex3f(-fx, 0, fy);
+        glVertex3f(-fy, 0, fx);
+        glVertex3f(-fx, 0, -fy);
+        glVertex3f(-fy, 0, -fx);
+        glVertex3f(fx, 0, -fy);
+        glVertex3f(fy, 0, -fx);
+
+        x++;
+        if (p < 0) {
+            p += 2 * x + 1;
+        }
+        else {
+            y--;
+            p += 2 * (x - y) + 1;
+        }
     }
     glEnd();
     glEnable(GL_LIGHTING);
@@ -258,8 +324,8 @@ void drawStars() {
     for (const auto& star : stars) {
         float twinkle = 0.5f + 0.5f * sin(animationTime + star.first);
         glColor3f(twinkle, twinkle, 1.0f);
-        glVertex3f(star.first, star.second, -50.0f); // Background
-        glVertex3f(star.first, star.second + 20.0f, star.first * 0.5f); // Foreground
+        glVertex3f(star.first, star.second, -50.0f);
+        glVertex3f(star.first, star.second + 20.0f, star.first * 0.5f);
     }
     glEnd();
     glEnable(GL_LIGHTING);
@@ -280,20 +346,16 @@ void drawSlider(const Slider& slider) {
     glRasterPos2f(slider.x, slider.y + slider.height + 5);
     for (char c : slider.label) glutBitmapCharacter(GLUT_BITMAP_HELVETICA_10, c);
 
-    // Bar
     glColor3f(0.3f, 0.3f, 0.3f);
     glRectf(slider.x, slider.y, slider.x + slider.width, slider.y + slider.height);
 
-    // Fill
     float thumbPos = slider.x + (slider.thumbX * slider.width);
     glColor3f(0.3f, 0.6f, 0.9f);
     glRectf(slider.x, slider.y, thumbPos, slider.y + slider.height);
 
-    // Thumb
     glColor3f(1.0f, 1.0f, 1.0f);
     glRectf(thumbPos - 3, slider.y - 2, thumbPos + 3, slider.y + slider.height + 2);
 
-    // Value
     char valStr[10];
     sprintf(valStr, "%.1fx", slider.value);
     glRasterPos2f(slider.x + slider.width + 5, slider.y + 2);
@@ -351,14 +413,14 @@ void display() {
     drawSun();
 
     for (const auto& p : planets) {
+        // Uses Midpoint Circle Algorithm for orbit
         drawOrbit(p.distance);
-        glPushMatrix();
 
+        glPushMatrix();
         float currentOrbit = animationTime * p.orbitSpeed;
         glRotatef(currentOrbit, 0.0f, 1.0f, 0.0f);
         glTranslatef(p.distance, 0.0f, 0.0f);
 
-        // Label
         glPushMatrix();
         glRotatef(-currentOrbit, 0.0f, 1.0f, 0.0f);
         glRotatef(-cameraAngleY, 0.0f, 1.0f, 0.0f);
@@ -366,14 +428,12 @@ void display() {
         drawLabel(p.name);
         glPopMatrix();
 
-        // Planet Body
         glRotatef(p.axialTilt, 1.0f, 0.0f, 0.0f);
         glRotatef(animationTime * p.rotationSpeed, 0.0f, 1.0f, 0.0f);
 
         if (p.hasRings) drawRings(p.size * 1.2f, p.size * 2.0f);
         drawPlanet(p);
 
-        // Moons
         for (const auto& m : p.moons) {
             glPushMatrix();
             glRotatef(animationTime * m.orbitSpeed, 0.0f, 1.0f, 0.0f);
@@ -465,8 +525,13 @@ void keyboard(unsigned char key, int x, int y) {
 }
 
 void init() {
-    srand(static_cast<unsigned>(time(nullptr)));
-    for (int i = 0; i < 200; i++) stars.push_back({ (float)(rand() % 200 - 100), (float)(rand() % 200 - 100) });
+    // Seed our custom LCG Random Generator
+    seed = (unsigned long)time(nullptr);
+
+    // Generate Stars using Custom RNG
+    for (int i = 0; i < 200; i++) {
+        stars.push_back({ customRand(-100, 100), customRand(-100, 100) });
+    }
 
     glClearColor(0.05f, 0.05f, 0.1f, 1.0f);
     glEnable(GL_DEPTH_TEST);
@@ -483,7 +548,7 @@ int main(int argc, char** argv) {
     glutInit(&argc, argv);
     glutInitDisplayMode(GLUT_DOUBLE | GLUT_RGB | GLUT_DEPTH);
     glutInitWindowSize(WINDOW_WIDTH, WINDOW_HEIGHT);
-    glutCreateWindow("Solar System Final");
+    glutCreateWindow("Solar System - Algorithms Implemented");
     init();
     glutDisplayFunc(display);
     glutReshapeFunc(reshape);
